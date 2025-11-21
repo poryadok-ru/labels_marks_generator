@@ -6,8 +6,8 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 from typing import ClassVar
 
-from LabelsMarksGenerator.barcode.writer import BaseWriter
-from LabelsMarksGenerator.barcode.writer import SVGWriter
+from barcode.writer import BaseWriter
+from barcode.writer import SVGWriter
 
 if TYPE_CHECKING:
     from typing import BinaryIO

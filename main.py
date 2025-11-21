@@ -1,291 +1,495 @@
 import pandas as pd
-from PIL import Image, ImageDraw, ImageFont
-import barcode
-from barcode.writer import ImageWriter
-import os
-import textwrap
-import re
 from reportlab.pdfgen import canvas
 from reportlab.lib.pagesizes import mm
+from reportlab.pdfbase import pdfmetrics
+from reportlab.pdfbase.ttfonts import TTFont
 from reportlab.lib.utils import ImageReader
-import shutil
+from PIL import Image
+import os
+import re
+from typing import Dict, Optional
+from LabelsMarksGenerator.barcode.writer import ImageWriter
+from io import BytesIO
 import logging
-import stat
-from typing import Dict, List, Optional, Tuple
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
-import sys
 import threading
+import shutil
+import sys
+from datetime import datetime
+from barcode.writer import ImageWriter
+import barcode
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+# Импортируем библиотеку для логирования
+try:
+    from log import Log
+except ImportError:
+    print(
+        "Библиотека логирования не установлена. Установите через: pip install git+ssh://git@github.com/AlexMayka/logging_python.git")
 
-barcode_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'barcode')
-if os.path.exists(barcode_path):
-    sys.path.insert(0, barcode_path)
 
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.FileHandler('app.log'),
-        logging.StreamHandler()
-    ]
-)
+    # Создаем заглушку для случая, если библиотека не установлена
+    class Log:
+        def __init__(self, token=None, **kwargs):
+            self.token = token
+            print("Логгер инициализирован в режиме заглушки (библиотека не установлена)")
+
+        def info(self, msg):
+            print(f"INFO: {msg}")
+            return type('Response', (), {'status_code': 201})()
+
+        def error(self, msg):
+            print(f"ERROR: {msg}")
+            return type('Response', (), {'status_code': 201})()
+
+        def warning(self, msg):
+            print(f"WARNING: {msg}")
+            return type('Response', (), {'status_code': 201})()
+
+        def debug(self, msg):
+            print(f"DEBUG: {msg}")
+            return type('Response', (), {'status_code': 201})()
+
+        def critical(self, msg):
+            print(f"CRITICAL: {msg}")
+            return type('Response', (), {'status_code': 201})()
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc_val, exc_tb):
+            if exc_type:
+                self.error(f"Исключение в контекстном менеджере: {exc_val}")
+            return False
+
+        def finish_success(self, period_from, period_to, **kwargs):
+            print(f"SUCCESS: Завершено с {period_from} по {period_to}")
+            return type('Response', (), {'status_code': 201})()
+
+        def finish_error(self, period_from, period_to, **kwargs):
+            print(f"ERROR: Завершено с ошибкой с {period_from} по {period_to}")
+            return type('Response', (), {'status_code': 201})()
+
+# Токен для логирования - замените на ваш действительный токен
+TOKEN = "10619b22-ca9f-404c-bf91-977530ac0e1a"
+
+# Настройка логирования
+logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 
 class Config:
-    DPI = 300
-    LABEL_SIZE_MM = (40, 40)
-    LABEL_SIZE_PX = (472, 472)
-    FONT_PATHS = {
-        'regular': 'arial.ttf',
-        'bold': 'arialbd.ttf'
-    }
-    OUTPUT_DIRS = [
-        'output/labels_png',
-        'output/labels_pdf',
-        'output/marks_png',
-        'output/marks_pdf'
-    ]
-    IMAGE_DIRS = [
-        'img/certificates',
-        'img/logos',
-        'img/mark_images'
-    ]
+    LABEL_SIZE_PX = (472, 472)  # 40mm x 40mm at 300 DPI
+    PAGE_SIZE = (40 * mm, 40 * mm)
 
 
 class ResourceManager:
-    _cache = {}
+    def __init__(self):
+        self.logger = Log(token=TOKEN, silent_errors=True)
 
-    @classmethod
-    def get_font(cls, font_type: str, size: int) -> ImageFont.FreeTypeFont:
-        key = (font_type, size)
-        if key not in cls._cache:
-            try:
-                font_path = Config.FONT_PATHS['bold'] if font_type == 'bold' else Config.FONT_PATHS['regular']
-
-                if not os.path.exists(font_path):
-                    if sys.platform == 'win32':
-                        font_dir = os.path.join(os.environ['WINDIR'], 'Fonts')
-                        font_path = os.path.join(font_dir, 'arialbd.ttf' if font_type == 'bold' else 'arial.ttf')
-
-                    if not os.path.exists(font_path):
-                        raise FileNotFoundError(f"Font not found: {font_path}")
-
-                cls._cache[key] = ImageFont.truetype(font_path, size)
-            except Exception as e:
-                logger.warning(f"Font load error: {e}. Using default font.")
-                cls._cache[key] = ImageFont.load_default()
-        return cls._cache[key]
-
-    @classmethod
-    def get_image(cls, image_path: str) -> Optional[Image.Image]:
-        if image_path not in cls._cache:
-            try:
-                if not os.path.exists(image_path):
-                    logger.warning(f"Image not found: {image_path}")
-                    return None
-
-                img = Image.open(image_path)
-                if img.mode != 'RGBA':
-                    img = img.convert('RGBA')
-                cls._cache[image_path] = img
-            except Exception as e:
-                logger.error(f"Image load error {image_path}: {e}")
-                return None
-        return cls._cache[image_path]
-
-
-def handle_remove_readonly(func, path, exc_info):
-    if not os.access(path, os.W_OK):
-        os.chmod(path, stat.S_IWUSR)
-        func(path)
-    else:
-        raise
-
-
-def normalize_column_name(col_name: str) -> str:
-    if pd.isna(col_name):
-        return ""
-    col_name = str(col_name).strip()
-    col_name = re.sub(r'\s+', ' ', col_name)
-    return col_name.lower()
-
-
-def normalize_columns(df: pd.DataFrame) -> pd.DataFrame:
-    column_mapping = {
-        'наименование': ['название', 'product', 'name', 'товар'],
-        'артикул': ['арт', 'article', 'sku', 'код товара'],
-        'штрихкод': ['barcode', 'штрих-код', 'штрих код'],
-        'сертификация': ['сертификат', 'certification'],
-        'тип сертификации': ['тип сертификата', 'certification type'],
-        'лого': ['logo', 'логотип'],
-        'назначение': ['purpose', 'применение'],
-        'материал': ['material', 'состав'],
-        'производитель': ['manufacturer', 'producer'],
-        'импортер': ['importer'],
-        'страна происхождения': ['country', 'страна'],
-        'дата изготовления': ['production date', 'дата'],
-        'код': ['code', 'код товара']
-    }
-
-    df.columns = [normalize_column_name(col) for col in df.columns]
-
-    for standard_name, variants in column_mapping.items():
-        for col in df.columns:
-            if col in variants:
-                df.rename(columns={col: standard_name}, inplace=True)
-
-    return df
-
-
-def read_excel(file_path: str) -> Optional[pd.DataFrame]:
-    try:
-        engines = ['openpyxl', 'xlrd']
-        df = None
-
-        for engine in engines:
-            try:
-                df = pd.read_excel(file_path, engine=engine)
-                logger.info(f"File read with engine {engine}")
-                break
-            except Exception as e:
-                logger.warning(f"Engine {engine} failed: {e}")
-                continue
-
-        if df is None:
-            logger.error("All engines failed to read the file")
+    @staticmethod
+    def get_image(path: str) -> Optional[Image.Image]:
+        try:
+            image = Image.open(path)
+            # Конвертируем в RGB если нужно, убираем прозрачность
+            if image.mode in ('RGBA', 'LA', 'P'):
+                # Создаем белый фон
+                background = Image.new('RGB', image.size, (255, 255, 255))
+                if image.mode == 'P':
+                    image = image.convert('RGBA')
+                background.paste(image, mask=image.split()[-1] if image.mode == 'RGBA' else None)
+                return background
+            else:
+                return image.convert('RGB')
+        except Exception as e:
+            Log(token=TOKEN, silent_errors=True).error(f"Image load error {path}: {e}")
             return None
 
-        df = normalize_columns(df)
-        logger.info(f"Normalized columns: {list(df.columns)}")
-        df = df.fillna('')
 
-        reference_row = None
-        for idx, row in df.iterrows():
-            if any(row.values):
-                reference_row = row
-                break
-
-        if reference_row is None:
-            logger.error("No data found in file!")
-            return df
-
-        excluded_fields = ['код', 'артикул', 'штрихкод', 'сертификация', 'тип сертификации', 'лого']
-        for idx, row in df.iterrows():
-            for col in df.columns:
-                if col not in excluded_fields and (row[col] == '' or pd.isna(row[col])):
-                    df.at[idx, col] = reference_row[col]
-
-        return df
-    except Exception as e:
-        logger.error(f"File read error: {e}")
-        return None
-
-
-def wrap_text(text: str, font: ImageFont.FreeTypeFont, max_width: int) -> List[str]:
-    lines = []
-    if not text:
-        return lines
-
-    words = text.split()
-    current_line = []
-
-    for word in words:
-        test_line = ' '.join(current_line + [word])
-        try:
-            bbox = font.getbbox(test_line)
-            text_width = bbox[2] - bbox[0]
-        except AttributeError:
-            text_width = font.getsize(test_line)[0]
-
-        if text_width <= max_width:
-            current_line.append(word)
-        else:
-            if current_line:
-                lines.append(' '.join(current_line))
-            current_line = [word]
-
-    if current_line:
-        lines.append(' '.join(current_line))
-
-    return lines
-
-
-def validate_data(row: pd.Series) -> bool:
-    required_fields = ['наименование']
-    for field in required_fields:
-        if not row.get(field):
-            logger.error(f"Missing required field {field} in row {row.name}")
-            return False
-    return True
-
-
-class LabelGenerator:
+class MarkGenerator:
     def __init__(self):
         self.config = Config
-        self.resource_manager = ResourceManager
+        self.resource_manager = ResourceManager()
+        self.logger = Log(token=TOKEN, silent_errors=True)
 
-    def generate_barcode(self, barcode_value: str) -> Optional[Image.Image]:
+    def generate_pdf(self, data: Dict, output_pdf_path: str) -> bool:
         try:
-            if not barcode_value:
-                return None
+            # Создаем PDF canvas
+            c = canvas.Canvas(output_pdf_path, pagesize=self.config.PAGE_SIZE)
 
-            barcode_str = str(barcode_value).strip()
-            if not barcode_str:
-                return None
-
-            import barcode
-            from io import BytesIO
-
-            code128 = barcode.codex.Code128(barcode_str, writer=barcode.writer.ImageWriter())
-            buffer = BytesIO()
-            code128.write(buffer)
-
-            barcode_img = Image.open(buffer)
-            barcode_img.load()
-
-            if barcode_img.mode != 'RGB':
-                barcode_img = barcode_img.convert('RGB')
-
-            return barcode_img
-
-        except Exception as e:
-            logger.error(f"Barcode generation error {barcode_value}: {e}")
-            return None
-
-    def generate(self, data: Dict, output_path: str, output_pdf_path: Optional[str] = None) -> bool:
-        try:
-            img = Image.new('RGB', self.config.LABEL_SIZE_PX, color='white')
-            draw = ImageDraw.Draw(img)
-
-            font_large_bold = self.resource_manager.get_font('bold', 20)
-            font_medium_bold = self.resource_manager.get_font('bold', 16)
-            font_medium = self.resource_manager.get_font('regular', 16)
-
+            # Получаем данные
+            article = data.get('артикул', '')
+            code = data.get('код', '')
             logo_name = data.get('лого', '').strip().lower()
-            logo_img = None
-            logo_width = 0
-            logo_height = 0
 
+            # Загружаем изображение марки
+            mark_image = None
+            mark_image_dir = "LabelsMarksGenerator/img/mark_images"
+            extensions = ['.png', '.jpg', '.jpeg', '.bmp']
+            for ext in extensions:
+                test_path = os.path.join(mark_image_dir, f"mark_images{ext}")
+                if os.path.exists(test_path):
+                    mark_image = self.resource_manager.get_image(test_path)
+                    if mark_image:
+                        break
+
+            # Рисуем изображение марки
+            if mark_image:
+                try:
+                    # Масштабируем изображение (максимальная ширина 270px)
+                    original_width, original_height = mark_image.size
+                    scale_factor = 270.0 / original_width
+                    new_width = 270
+                    new_height = int(original_height * scale_factor)
+
+                    # Ресайзим изображение
+                    mark_image_resized = mark_image.resize((new_width, new_height), Image.Resampling.LANCZOS)
+
+                    # Конвертируем в RGB для PDF
+                    if mark_image_resized.mode != 'RGB':
+                        mark_image_resized = mark_image_resized.convert('RGB')
+
+                    # Сохраняем во временный буфер
+                    temp_buffer = BytesIO()
+                    mark_image_resized.save(temp_buffer, format='JPEG',
+                                            quality=95)  # Используем JPEG для надежности
+                    temp_buffer.seek(0)
+
+                    # Рассчитываем размеры для PDF (конвертируем пиксели в мм)
+                    mark_pdf_width = new_width * (40 * mm / 472)
+                    mark_pdf_height = new_height * (40 * mm / 472)
+
+                    # Позиционируем вверху слева с небольшими отступами
+                    x_pos = 0.5 * mm
+                    y_pos = self.config.PAGE_SIZE[1] - mark_pdf_height - 0.5 * mm
+
+                    # Рисуем изображение в PDF
+                    c.drawImage(ImageReader(temp_buffer), x_pos, y_pos,
+                                mark_pdf_width, mark_pdf_height)
+
+                except Exception as e:
+                    # Продолжаем без изображения марки
+                    pass
+
+            # Загружаем и рисуем логотип
+            logo_image = None
             if logo_name:
-                logo_dir = "img/logos"
+                logo_dir = "LabelsMarksGenerator/img/logos"
                 extensions = ['.png', '.jpg', '.jpeg', '.bmp']
                 for ext in extensions:
                     logo_path = os.path.join(logo_dir, f"{logo_name}{ext}")
                     if os.path.exists(logo_path):
                         try:
-                            logo_img = self.resource_manager.get_image(logo_path)
-                            if logo_img:
-                                max_logo_size = 200
-                                logo_img.thumbnail((max_logo_size, max_logo_size))
-                                logo_width, logo_height = logo_img.size
-                                img.paste(logo_img, (472 - logo_width - 5, 5), logo_img)
+                            logo_image = self.resource_manager.get_image(logo_path)
+                            if logo_image:
+
+                                # Масштабируем логотип (максимальный размер 200px)
+                                logo_image.thumbnail((200, 200), Image.Resampling.LANCZOS)
+                                logo_width, logo_height = logo_image.size
+
+                                # Конвертируем в RGB
+                                if logo_image.mode != 'RGB':
+                                    logo_image = logo_image.convert('RGB')
+
+                                # Сохраняем во временный буфер
+                                temp_buffer_logo = BytesIO()
+                                logo_image.save(temp_buffer_logo, format='JPEG', quality=95)
+                                temp_buffer_logo.seek(0)
+
+                                # Рассчитываем размеры для PDF
+                                logo_pdf_width = logo_width * (40 * mm / 472)
+                                logo_pdf_height = logo_height * (40 * mm / 472)
+
+                                # Позиционируем логотип под маркой
+                                logo_x = 0.5 * mm
+                                if mark_image:
+                                    logo_y = self.config.PAGE_SIZE[1] - mark_pdf_height - logo_pdf_height - 1 * mm
+                                else:
+                                    logo_y = self.config.PAGE_SIZE[1] - logo_pdf_height - 0.5 * mm
+
+                                # Рисуем логотип
+                                c.drawImage(ImageReader(temp_buffer_logo), logo_x, logo_y,
+                                            logo_pdf_width, logo_pdf_height)
                                 break
+
                         except Exception as e:
-                            logger.error(f"Logo load error {logo_name}: {e}")
                             continue
+
+            # Настраиваем шрифты
+            try:
+                # Пробуем зарегистрировать шрифты
+                font_paths = [
+                    'arial.ttf',
+                    'arialbd.ttf',
+                    os.path.join(os.environ.get('WINDIR', ''), 'Fonts', 'arial.ttf'),
+                    os.path.join(os.environ.get('WINDIR', ''), 'Fonts', 'arialbd.ttf'),
+                    '/usr/share/fonts/truetype/freefont/FreeSans.ttf',
+                    '/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf'
+                ]
+
+                arial_registered = False
+                arial_bold_registered = False
+
+                for font_path in font_paths:
+                    if os.path.exists(font_path):
+                        try:
+                            if 'bd' in font_path.lower() or 'bold' in font_path.lower():
+                                pdfmetrics.registerFont(TTFont('Arial-Bold', font_path))
+                                arial_bold_registered = True
+                            else:
+                                pdfmetrics.registerFont(TTFont('Arial', font_path))
+                                arial_registered = True
+                        except:
+                            continue
+
+                if arial_registered and arial_bold_registered:
+                    font_title = 'Arial-Bold'
+                    font_regular = 'Arial'
+                else:
+                    # Используем стандартные шрифты
+                    font_title = 'Helvetica-Bold'
+                    font_regular = 'Helvetica'
+
+            except Exception as e:
+                font_title = 'Helvetica-Bold'
+                font_regular = 'Helvetica'
+
+            # Рассчитываем стартовую позицию для текста
+            if logo_image:
+                start_y_offset = logo_pdf_height + 15 * mm  # Отступ под логотипом(кажется лого не учитывается)
+            else:
+                start_y_offset = mark_pdf_height + 5 * mm  # Отступ от верха
+
+            y_position = self.config.PAGE_SIZE[1] - start_y_offset
+
+            # Текст артикула
+            if code:
+                c.setFont(font_title, 5)
+                c.drawString(3 * mm, y_position, f"Артикул: {code}")
+
+            # Остальной текст
+            y_position -= 3 * mm
+            c.setFont(font_regular, 5)
+            c.drawString(3 * mm, y_position, "Количество:")
+
+            y_position -= 3 * mm
+            c.drawString(3 * mm, y_position, "Вес нетто:")
+
+            # Текст "кг" справа
+            kg_text = "кг"
+            kg_width = c.stringWidth(kg_text, font_regular, 5)
+            c.drawString(self.config.PAGE_SIZE[0] - 3 * mm - kg_width,
+                         y_position, kg_text)
+
+            y_position -= 3 * mm
+            c.drawString(3 * mm, y_position, "Вес брутто:")
+            c.drawString(self.config.PAGE_SIZE[0] - 3 * mm - kg_width,
+                         y_position, kg_text)
+
+            c.save()
+            return True
+
+        except Exception as e:
+            return False
+
+
+class PDFLabelGenerator:
+    def __init__(self):
+        self.page_width = 40 * mm
+        self.page_height = 40 * mm
+        self.logo_width = 18 * mm
+        self.logo_height = 5.76 * mm
+        self.cert_sign_size = 4 * mm
+        self.logger = Log(token=TOKEN, silent_errors=True)
+
+        # Register Arial font
+        try:
+            if os.path.exists('arial.ttf'):
+                pdfmetrics.registerFont(TTFont('Arial', 'arial.ttf'))
+                pdfmetrics.registerFont(TTFont('Arial-Bold', 'arialbd.ttf'))
+            else:
+                font_path = os.path.join(os.environ['WINDIR'], 'Fonts', 'arial.ttf')
+                bold_font_path = os.path.join(os.environ['WINDIR'], 'Fonts', 'arialbd.ttf')
+                if os.path.exists(font_path):
+                    pdfmetrics.registerFont(TTFont('Arial', font_path))
+                if os.path.exists(bold_font_path):
+                    pdfmetrics.registerFont(TTFont('Arial-Bold', bold_font_path))
+                else:
+                    pdfmetrics.registerFont(TTFont('Arial-Bold', font_path))
+        except:
+            pass
+
+    def normalize_column_name(self, col_name: str) -> str:
+        if pd.isna(col_name):
+            return ""
+        col_name = str(col_name).strip()
+        col_name = re.sub(r'\s+', ' ', col_name)
+        return col_name.lower()
+
+    def normalize_columns(self, df: pd.DataFrame) -> pd.DataFrame:
+        column_mapping = {
+            'наименование': ['название', 'product', 'name', 'товар'],
+            'артикул': ['арт', 'article', 'sku', 'код товара'],
+            'штрихкод': ['barcode', 'штрих-код', 'штрих код'],
+            'сертификация': ['сертификат', 'certification'],
+            'тип сертификации': ['тип сертификата', 'certification type'],
+            'лого': ['logo', 'логотип'],
+            'назначение': ['purpose', 'применение'],
+            'материал': ['material', 'состав'],
+            'производитель': ['manufacturer', 'producer'],
+            'импортер': ['importer'],
+            'страна происхождения': ['country', 'страна'],
+            'дата изготовления': ['production date', 'дата'],
+            'код': ['code', 'код товара']
+        }
+
+        df.columns = [self.normalize_column_name(col) for col in df.columns]
+
+        for standard_name, variants in column_mapping.items():
+            for col in df.columns:
+                if col in variants:
+                    df.rename(columns={col: standard_name}, inplace=True)
+
+        return df
+
+    def read_excel(self, file_path: str) -> Optional[pd.DataFrame]:
+        try:
+            engines = ['openpyxl', 'xlrd']
+            df = None
+            for engine in engines:
+                try:
+                    df = pd.read_excel(file_path, engine=engine)
+                    break
+                except Exception as e:
+                    continue
+
+            if df is None:
+                return None
+
+            df = self.normalize_columns(df)
+            df = df.fillna('')
+
+            return df
+        except Exception as e:
+            return None
+
+    def wrap_text(self, text: str, font_name: str, font_size: int, max_width: float, canvas_obj: canvas.Canvas) -> list:
+        if not text:
+            return []
+
+        words = text.split()
+        lines = []
+        current_line = []
+
+        for word in words:
+            test_line = ' '.join(current_line + [word])
+            text_width = canvas_obj.stringWidth(test_line, font_name, font_size)
+
+            if text_width <= max_width:
+                current_line.append(word)
+            else:
+                if current_line:
+                    lines.append(' '.join(current_line))
+                current_line = [word]
+
+        if current_line:
+            lines.append(' '.join(current_line))
+
+        return lines
+
+    def generate_barcode(self, barcode_value: str) -> Optional[ImageReader]:
+        try:
+            if not barcode_value:
+                return None
+            barcode_str = str(barcode_value).strip()
+            if barcode_str.endswith('.0'):
+                barcode_str = barcode_str[:-2]
+            barcode_str = ''.join(filter(str.isdigit, barcode_str))
+            if not barcode_str:
+                return None
+            # Использование библиотеки python-barcode
+            code128 = barcode.get('code128', barcode_str, writer=ImageWriter())
+            buffer = BytesIO()
+            code128.write(buffer)
+            buffer.seek(0)
+            barcode_img = Image.open(buffer)
+            barcode_img.load()
+            if barcode_img.mode != 'RGB':
+                barcode_img = barcode_img.convert('RGB')
+            barcode_img = barcode_img.resize((200, 200))
+            buffer2 = BytesIO()
+            barcode_img.save(buffer2, format='PNG')
+            buffer2.seek(0)
+            return ImageReader(buffer2)
+        except Exception as e:
+            return None
+
+    def get_logo_image(self, logo_name: str) -> Optional[ImageReader]:
+        if not logo_name:
+            return None
+
+        logo_dir = "LabelsMarksGenerator/img/logos"
+        extensions = ['.png', '.jpg', '.jpeg', '.bmp']
+
+        for ext in extensions:
+            logo_path = os.path.join(logo_dir, f"{logo_name}{ext}")
+            if os.path.exists(logo_path):
+                try:
+                    return ImageReader(logo_path)
+                except Exception as e:
+                    continue
+
+        return None
+
+    def get_certification_icon(self, certification_type: str) -> Optional[str]:
+        if not certification_type:
+            return None
+
+        cert_dir = "LabelsMarksGenerator/img/certificates"
+        os.makedirs(cert_dir, exist_ok=True)
+
+        cert_type_lower = str(certification_type).lower().strip()
+
+        if cert_type_lower in ['рст', 'rct', 'rst']:
+            possible_paths = [
+                os.path.join(cert_dir, "рст.png"),
+                os.path.join(cert_dir, "rct.png"),
+                os.path.join(cert_dir, "rst.png"),
+                os.path.join(cert_dir, "рст.jpg"),
+                os.path.join(cert_dir, "rct.jpg"),
+                os.path.join(cert_dir, "rst.jpg")
+            ]
+        elif cert_type_lower in ['eac', 'еас']:
+            possible_paths = [
+                os.path.join(cert_dir, "eac.png"),
+                os.path.join(cert_dir, "еас.png"),
+                os.path.join(cert_dir, "eac.jpg"),
+                os.path.join(cert_dir, "еас.jpg")
+            ]
+        else:
+            return None
+
+        for path in possible_paths:
+            if os.path.exists(path):
+                return path
+
+        return None
+
+    def create_label_pdf(self, data: Dict, output_path: str) -> bool:
+        try:
+            c = canvas.Canvas(output_path, pagesize=(self.page_width, self.page_height))
+
+            font_large_bold = 'Arial-Bold'
+            font_medium_bold = 'Arial-Bold'
+            font_medium = 'Arial'
+            font_small = 'Arial'
+
+            large_font_size = 5
+            medium_font_size = 4
+            small_font_size = 3
+
+            line_height = 1.6 * mm
+            field_spacing = 0.3 * mm
 
             name = data.get('наименование', '')
             purpose = data.get('назначение', '')
@@ -300,262 +504,246 @@ class LabelGenerator:
             certification = data.get('сертификация', '')
             certification_type = data.get('тип сертификации', '')
 
-            y_position = 10
-            max_y = 470
+            logo_name = data.get('лого', '').strip().lower()
+            logo_img = self.get_logo_image(logo_name)
+            has_logo = logo_img is not None
 
-            if logo_img:
-                left_area_width = 472 - logo_width - 15
-                under_logo_area_width = 462
-            else:
-                left_area_width = 462
-                under_logo_area_width = 462
+            if has_logo:
+                try:
+                    logo_x = self.page_width - self.logo_width - 1 * mm
+                    logo_y = self.page_height - self.logo_height
+                    c.drawImage(logo_img, logo_x, logo_y, self.logo_width, self.logo_height)
+                except Exception as e:
+                    pass
 
-            name_lines = wrap_text(name, font_large_bold, left_area_width)
-            for line in name_lines:
-                if y_position + 20 > max_y:
-                    break
-                draw.text((10, y_position), line, font=font_large_bold, fill='black')
-                y_position += 20
+            x_position = 1 * mm
+            y_position = self.page_height - 2 * mm
 
-            y_position += 5
+            if name:
+                if has_logo:
+                    text_width_for_name = (self.page_width - self.logo_width - 3 * mm)
+                else:
+                    text_width_for_name = self.page_width - 2 * mm
 
-            fields = [
-                ("Назначение", purpose),
-                ("Материал", material),
-                ("Производитель", manufacturer),
-                ("Импортер", importer),
-                ("Страна происхождения", country),
-                ("Дата изготовления", production_date)
+                lines_beside_logo = self.wrap_text(name, font_large_bold, large_font_size,
+                                                   text_width_for_name, c)
+
+                lines_used = 0
+                for i, line in enumerate(lines_beside_logo):
+                    current_y = y_position - (i * line_height)
+                    if has_logo and current_y > (self.page_height - self.logo_height):
+                        c.setFont(font_large_bold, large_font_size)
+                        c.drawString(x_position, current_y, line)
+                        lines_used += 1
+                    elif not has_logo:
+                        c.setFont(font_large_bold, large_font_size)
+                        c.drawString(x_position, current_y, line)
+                        lines_used += 1
+                    else:
+                        break
+
+                next_line_y = y_position - (lines_used * line_height)
+
+                if has_logo and lines_used < len(lines_beside_logo):
+                    remaining_text = ' '.join(
+                        name.split()[sum(len(line.split()) for line in lines_beside_logo[:lines_used]):])
+
+                    if remaining_text:
+                        full_width = self.page_width - 2 * mm
+                        remaining_lines = self.wrap_text(remaining_text, font_large_bold, large_font_size,
+                                                         full_width, c)
+
+                        start_y = next_line_y
+
+                        for j, line in enumerate(remaining_lines):
+                            if start_y - (j * line_height) < 15 * mm:
+                                break
+                            c.setFont(font_large_bold, large_font_size)
+                            c.drawString(x_position, start_y - (j * line_height), line)
+
+                        y_position = start_y - len(remaining_lines) * line_height - field_spacing
+                    else:
+                        y_position = next_line_y - field_spacing
+                else:
+                    y_position = next_line_y - field_spacing
+
+            priority_fields = [
+                ("Назначение", purpose, font_medium),
+                ("Материал", material, font_medium),
+                ("Производитель", manufacturer, font_medium),
+                ("Импортер", importer, font_medium),
+                ("Страна происхождения", country, font_medium),
+                ("Дата изготовления", production_date, font_medium)
             ]
 
-            for field_name, field_value in fields:
+            for field_name, field_value, font in priority_fields:
                 if not field_value:
                     continue
 
-                if y_position > max_y - 50:
+                if y_position - line_height < 12 * mm:
                     break
 
-                current_width = left_area_width if y_position < (5 + logo_height) else under_logo_area_width
+                c.setFont(font_medium_bold, medium_font_size)
+                field_text = f"{field_name}:"
+                c.drawString(x_position, y_position, field_text)
 
-                draw.text((10, y_position), f"{field_name}:", font=font_medium_bold, fill='black')
+                field_name_width = c.stringWidth(field_text, font_medium_bold, medium_font_size)
+                value_x = x_position + field_name_width + 0.5 * mm
+                value_max_width = self.page_width - value_x - 2 * mm
 
-                try:
-                    bbox = font_medium_bold.getbbox(field_name + ":")
-                    field_name_width = bbox[2] - bbox[0]
-                except AttributeError:
-                    field_name_width = font_medium_bold.getsize(field_name + ":")[0]
-
-                value_max_width = current_width - field_name_width - 5
-                value_lines = wrap_text(field_value, font_medium, value_max_width)
-
+                value_lines = self.wrap_text(field_value, font, medium_font_size, value_max_width, c)
                 if value_lines:
-                    draw.text((10 + field_name_width + 5, y_position), value_lines[0], font=font_medium, fill='black')
+                    c.setFont(font, medium_font_size)
+                    c.drawString(value_x, y_position, value_lines[0])
 
                     for i in range(1, len(value_lines)):
-                        if y_position + i * 15 > max_y - 50:
+                        if y_position - (i * line_height) < 12 * mm:
                             break
-                        if y_position + i * 15 >= (5 + logo_height):
-                            line_width = under_logo_area_width
-                        else:
-                            line_width = left_area_width
+                        c.drawString(x_position, y_position - (i * line_height), value_lines[i])
 
-                        sub_lines = wrap_text(value_lines[i], font_medium, line_width)
-                        for sub_line in sub_lines:
-                            if y_position + i * 15 > max_y - 50:
-                                break
-                            draw.text((10, y_position + i * 15), sub_line, font=font_medium, fill='black')
-                            i += 1
+                    y_position -= max(1, len(value_lines)) * line_height
+                else:
+                    y_position -= line_height
 
-                    y_position += len(value_lines) * 15
+                y_position -= field_spacing
 
-                y_position += 8
-
-            if y_position < 350:
-                code_article_parts = []
+            if code or article:
+                code_article_text = ""
                 if code:
-                    code_article_parts.append(f"Код: {code}")
+                    code_article_text += f"Код: {code}"
                 if article:
-                    code_article_parts.append(f"Артикул: {article}")
+                    if code_article_text:
+                        code_article_text += " "
+                    code_article_text += f"Арт: {article}"
 
-                if code_article_parts:
-                    code_article_text = "\n".join(code_article_parts)
-                    draw.text((250, 350), code_article_text, font=font_medium, fill='black')
+                if code_article_text:
+                    c.setFont(font_small, small_font_size)
+                    c.drawString(22 * mm, 10 * mm, code_article_text)
 
-            if barcode_value and y_position < 400:
-                try:
-                    barcode_img = self.generate_barcode(barcode_value)
-                    if barcode_img:
-                        logger.info(f"Barcode generated: {barcode_value}")
-                        barcode_img = barcode_img.resize((200, 80))
-                        img.paste(barcode_img, (250, 390))
-                    else:
-                        logger.warning(f"Barcode generation failed for: {barcode_value}")
-                except Exception as e:
-                    logger.error(f"Barcode insertion error: {e}")
-            else:
-                logger.warning(f"Barcode conditions not met: barcode_value={barcode_value}, y_position={y_position}")
+            if certification:
+                cert_area_width = 18 * mm
+                cert_area_x = 1 * mm
 
-            if certification and y_position < 420:
-                cert_text = certification
-                cert_lines = wrap_text(cert_text, font_medium, 250)
+                cert_icon_path = None
+                if certification_type:
+                    cert_icon_path = self.get_certification_icon(certification_type)
 
+                cert_text_y = 3 * mm
+
+                if cert_icon_path:
+                    try:
+                        cert_icon = ImageReader(cert_icon_path)
+                        cert_x = cert_area_x
+                        cert_y = cert_text_y + 2 * mm
+                        c.drawImage(cert_icon, cert_x, cert_y, self.cert_sign_size, self.cert_sign_size,
+                                    mask='auto')
+                    except Exception as e:
+                        pass
+
+                cert_text = str(certification)
+                cert_lines = self.wrap_text(cert_text, font_small, small_font_size,
+                                            cert_area_width, c)
+
+                cert_lines = cert_lines[:2]
+
+                c.setFont(font_small, small_font_size)
                 for i, line in enumerate(cert_lines):
-                    if 400 + i * 15 > max_y:
-                        break
-                    draw.text((10, 430 + i * 15), line, font=font_medium, fill='black')
+                    cert_y = cert_text_y - (i * 1 * mm)
+                    if cert_y > 1 * mm:
+                        c.drawString(cert_area_x, cert_y, line)
 
-                if certification_type and 380 < max_y:
-                    if certification_type.lower() == 'рст':
-                        cert_icon_path = "img/certificates/рст.png"
-                    elif certification_type.lower() == 'eac':
-                        cert_icon_path = "img/certificates/eac.png"
-                    else:
-                        cert_icon_path = None
+            if barcode_value:
+                barcode_img = self.generate_barcode(barcode_value)
+                if barcode_img:
+                    barcode_x = self.page_width - 20 * mm
+                    barcode_y = 1 * mm
+                    c.drawImage(barcode_img, barcode_x, barcode_y, 20 * mm, 8 * mm)
 
-                    if cert_icon_path and os.path.exists(cert_icon_path):
-                        try:
-                            cert_icon = self.resource_manager.get_image(cert_icon_path)
-                            if cert_icon:
-                                cert_icon = cert_icon.resize((80, 80))
-                                img.paste(cert_icon, (10, 360), cert_icon)
-                        except Exception as e:
-                            logger.error(f"Certification icon load error: {e}")
-
-            os.makedirs(os.path.dirname(output_path), exist_ok=True)
-            img.save(output_path)
-            logger.info(f"Label saved: {output_path}")
-
-            if output_pdf_path:
-                self.create_pdf_from_image(output_path, output_pdf_path)
-
-            return True
-
-        except Exception as e:
-            logger.error(f"Label generation error: {e}")
-            return False
-
-    def create_pdf_from_image(self, image_path: str, pdf_path: str) -> bool:
-        try:
-            c = canvas.Canvas(pdf_path, pagesize=(40 * mm, 40 * mm))
-            img_reader = ImageReader(image_path)
-            c.drawImage(img_reader, 0, 0, 40 * mm, 40 * mm)
             c.save()
-            logger.info(f"PDF created: {pdf_path}")
             return True
+
         except Exception as e:
-            logger.error(f"PDF creation error: {e}")
             return False
 
 
-class MarkGenerator:
+class CombinedGenerator:
     def __init__(self):
-        self.config = Config
-        self.resource_manager = ResourceManager
+        self.mark_generator = MarkGenerator()
+        self.label_generator = PDFLabelGenerator()
+        self.logger = Log(token=TOKEN, silent_errors=True)
 
-    def generate(self, data: Dict, output_path: str, output_pdf_path: Optional[str] = None) -> bool:
+    def normalize_columns(self, df: pd.DataFrame) -> pd.DataFrame:
+        return self.label_generator.normalize_columns(df)
+
+    def read_excel(self, file_path: str) -> Optional[pd.DataFrame]:
+        return self.label_generator.read_excel(file_path)
+
+    def process_excel_file(self, excel_file_path: str, output_dir: str = "output"):
         try:
-            img = Image.new('RGB', self.config.LABEL_SIZE_PX, color='white')
-            draw = ImageDraw.Draw(img)
+            df = self.read_excel(excel_file_path)
+            if df is None or df.empty:
+                self.logger.error("No data found in Excel file")
+                return False
 
-            font_title = self.resource_manager.get_font('bold', 20)
-            font_regular = self.resource_manager.get_font('regular', 20)
+            total_rows = len(df)
 
-            mark_image_path = None
-            mark_image_dir = "img/mark_images"
-            extensions = ['.png', '.jpg', '.jpeg', '.bmp']
+            if 'штрихкод' in df.columns:
+                df['штрихкод'] = df['штрихкод'].apply(lambda x:
+                                                      str(int(x)) if pd.notna(x) and x != '' and str(x).replace(
+                                                          '.0',
+                                                          '').isdigit()
+                                                      else str(x) if pd.notna(x) and x != ''
+                                                      else '')
 
-            for ext in extensions:
-                test_path = os.path.join(mark_image_dir, f"mark_images{ext}")
-                if os.path.exists(test_path):
-                    mark_image_path = test_path
-                    break
+            os.makedirs(output_dir, exist_ok=True)
+            os.makedirs(os.path.join(output_dir, "marks"), exist_ok=True)
+            os.makedirs(os.path.join(output_dir, "labels"), exist_ok=True)
 
-            mark_img = None
-            mark_height = 0
+            success_count_marks = 0
+            success_count_labels = 0
 
-            if mark_image_path:
-                try:
-                    mark_img = self.resource_manager.get_image(mark_image_path)
-                    if mark_img:
-                        width_percent = 270 / float(mark_img.size[0])
-                        new_height = int(float(mark_img.size[1]) * float(width_percent))
-                        mark_img = mark_img.resize((270, new_height))
-                        mark_height = new_height
-                        img.paste(mark_img, (5, 3), mark_img)
-                except Exception as e:
-                    logger.error(f"Mark image load error: {e}")
+            for idx, row in df.iterrows():
+                if not row.get('наименование'):
+                    continue
 
-            logo_name = data.get('лого', '').strip().lower()
-            logo_img = None
+                row_data = row.to_dict()
 
-            if logo_name:
-                logo_dir = "img/logos"
-                extensions = ['.png', '.jpg', '.jpeg', '.bmp']
-                for ext in extensions:
-                    logo_path = os.path.join(logo_dir, f"{logo_name}{ext}")
-                    if os.path.exists(logo_path):
-                        try:
-                            logo_img = self.resource_manager.get_image(logo_path)
-                            if logo_img:
-                                max_logo_size = 200
-                                logo_img.thumbnail((max_logo_size, max_logo_size))
-                                logo_width, logo_height = logo_img.size
-                                x_position = 10
-                                y_logo_position = mark_height + 20
-                                img.paste(logo_img, (x_position, y_logo_position), logo_img)
-                                break
-                        except Exception as e:
-                            logger.error(f"Logo load error {logo_name}: {e}")
-                            continue
+                if 'штрихкод' in row_data and row_data['штрихкод']:
+                    barcode_val = row_data['штрихкод']
+                    if isinstance(barcode_val, float) and barcode_val.is_integer():
+                        row_data['штрихкод'] = str(int(barcode_val))
+                    else:
+                        row_data['штрихкод'] = str(barcode_val)
 
-            article = data.get('артикул', '')
-            code = data.get('код', '')
+                article = str(row.get('артикул', '')).strip()
+                code = str(row.get('код', '')).strip()
+                article_clean = re.sub(r'[\\/*?:"<>|]', "_", article)
+                code_clean = re.sub(r'[\\/*?:"<>|]', "_", code)
 
-            y_position = mark_height + 120 if mark_img else 120
+                base_filename = f"{article_clean}_{code_clean}" if article_clean or code_clean else f"row_{idx}"
 
-            if code:
-                draw.text((50, y_position), f"Артикул: {code}", font=font_title, fill='black')
-            y_position += 40
+                # Generate mark PDF directly
+                mark_pdf_path = os.path.join(output_dir, "marks", f"mark_{base_filename}.pdf")
+                if self.mark_generator.generate_pdf(row_data, mark_pdf_path):
+                    success_count_marks += 1
 
-            draw.text((50, y_position), "Количество:", font=font_regular, fill='black')
-            y_position += 40
+                # Generate label PDF
+                label_pdf_path = os.path.join(output_dir, "labels", f"label_{base_filename}.pdf")
+                if self.label_generator.create_label_pdf(row_data, label_pdf_path):
+                    success_count_labels += 1
 
-            draw.text((50, y_position), "Вес нетто:", font=font_regular, fill='black')
-            kg_text = "кг"
-            try:
-                bbox = font_regular.getbbox(kg_text)
-                kg_width = bbox[2] - bbox[0]
-            except AttributeError:
-                kg_width = font_regular.getsize(kg_text)[0]
-            draw.text((472 - 50 - kg_width, y_position), kg_text, font=font_regular, fill='black')
-            y_position += 40
+                # Логируем прогресс каждые 25 записей или на последней записи
+                current_progress = idx + 1
+                if current_progress % 25 == 0 or current_progress == total_rows:
+                    self.logger.info(f"Обработано {current_progress} из {total_rows} записей")
 
-            draw.text((50, y_position), "Вес брутто:", font=font_regular, fill='black')
-            draw.text((472 - 50 - kg_width, y_position), kg_text, font=font_regular, fill='black')
+            # Финальное сообщение о результатах
+            self.logger.info(f"Обработано файлов: 1, создано этикеток: {success_count_labels}, марок: {success_count_marks}")
 
-            os.makedirs(os.path.dirname(output_path), exist_ok=True)
-            img.save(output_path)
-            logger.info(f"Mark saved: {output_path}")
-
-            if output_pdf_path:
-                self.create_pdf_from_image(output_path, output_pdf_path)
-
-            return True
+            return success_count_marks > 0 or success_count_labels > 0
 
         except Exception as e:
-            logger.error(f"Mark generation error: {e}")
-            return False
-
-    def create_pdf_from_image(self, image_path: str, pdf_path: str) -> bool:
-        try:
-            c = canvas.Canvas(pdf_path, pagesize=(40 * mm, 40 * mm))
-            img_reader = ImageReader(image_path)
-            c.drawImage(img_reader, 0, 0, 40 * mm, 40 * mm)
-            c.save()
-            logger.info(f"PDF created: {pdf_path}")
-            return True
-        except Exception as e:
-            logger.error(f"PDF creation error: {e}")
+            self.logger.error(f"Ошибка при формировании запроса: {e}")
             return False
 
 
@@ -566,10 +754,14 @@ class Application:
         self.root.geometry("600x400")
         self.root.resizable(True, True)
 
-        os.makedirs('input', exist_ok=True)
-        for dir_path in Config.IMAGE_DIRS:
-            os.makedirs(dir_path, exist_ok=True)
+        # Создаем необходимые директории
+        os.makedirs('LabelsMarksGenerator/input', exist_ok=True)
+        os.makedirs('LabelsMarksGenerator/output', exist_ok=True)
+        os.makedirs('LabelsMarksGenerator/img/logos', exist_ok=True)
+        os.makedirs('LabelsMarksGenerator/img/certificates', exist_ok=True)
+        os.makedirs('LabelsMarksGenerator/img/mark_images', exist_ok=True)
 
+        self.generator = CombinedGenerator()
         self.setup_ui()
 
     def setup_ui(self):
@@ -581,43 +773,50 @@ class Application:
 
         instruction_text = """
         Инструкция:
-        1. Поместите Excel-файлы в папку 'input' или выберите файлы кнопкой ниже
-        2. Нажмите кнопку 'Обработать файлы'
+        1. Выберите Excel-файл с данными
+        2. Нажмите кнопку 'Обработать файл'
         3. Результаты появятся в папке 'output'
 
         Структура папки output:
-        - labels_png/ - этикетки в формате PNG
-        - labels_pdf/ - этикетки в формате PDF  
-        - marks_png/ - маркировки в формате PNG
-        - marks_pdf/ - маркировки в формате PDF
+        - labels/ - этикетки в формате PDF
+        - marks/ - маркировки в формате PDF
         """
-
         instruction_label = ttk.Label(main_frame, text=instruction_text, justify=tk.LEFT)
         instruction_label.grid(row=1, column=0, columnspan=2, pady=(0, 20))
 
-        select_btn = ttk.Button(main_frame, text="Выбрать файлы", command=self.select_files)
+        # Кнопка выбора файла
+        select_btn = ttk.Button(main_frame, text="Выбрать файл", command=self.select_file)
         select_btn.grid(row=2, column=0, pady=5, padx=5, sticky=tk.EW)
 
-        process_btn = ttk.Button(main_frame, text="Обработать файлы", command=self.process_files)
+        # Кнопка обработки
+        process_btn = ttk.Button(main_frame, text="Обработать файл", command=self.process_file)
         process_btn.grid(row=2, column=1, pady=5, padx=5, sticky=tk.EW)
 
+        # Прогресс-бар
         self.progress = ttk.Progressbar(main_frame, mode='indeterminate')
         self.progress.grid(row=3, column=0, columnspan=2, pady=10, sticky=tk.EW)
 
+        # Статус
         self.status_var = tk.StringVar(value="Готов к работе")
         status_label = ttk.Label(main_frame, textvariable=self.status_var)
         status_label.grid(row=4, column=0, columnspan=2, pady=5)
 
+        # Лог
         log_frame = ttk.LabelFrame(main_frame, text="Лог выполнения", padding="5")
         log_frame.grid(row=5, column=0, columnspan=2, pady=10, sticky=(tk.W, tk.E, tk.N, tk.S))
 
         self.log_text = tk.Text(log_frame, height=10, width=70)
         log_scrollbar = ttk.Scrollbar(log_frame, orient=tk.VERTICAL, command=self.log_text.yview)
         self.log_text.configure(yscrollcommand=log_scrollbar.set)
-
         self.log_text.grid(row=0, column=0, sticky=(tk.W, tk.E, tk.N, tk.S))
         log_scrollbar.grid(row=0, column=1, sticky=(tk.N, tk.S))
 
+        # Информация о выбранном файле
+        self.file_var = tk.StringVar(value="Файл не выбран")
+        file_label = ttk.Label(main_frame, textvariable=self.file_var)
+        file_label.grid(row=6, column=0, columnspan=2, pady=5)
+
+        # Настройка весов для растягивания
         self.root.columnconfigure(0, weight=1)
         self.root.rowconfigure(0, weight=1)
         main_frame.columnconfigure(0, weight=1)
@@ -626,6 +825,7 @@ class Application:
         log_frame.columnconfigure(0, weight=1)
         log_frame.rowconfigure(0, weight=1)
 
+        # Перенаправление вывода в лог
         self.redirect_logging()
 
     def redirect_logging(self):
@@ -645,164 +845,174 @@ class Application:
         text_handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
         logger.addHandler(text_handler)
 
-    def select_files(self):
-        files = filedialog.askopenfilenames(
-            title="Выберите Excel файлы",
+    def select_file(self):
+        file_path = filedialog.askopenfilename(
+            title="Выберите Excel файл",
             filetypes=[("Excel files", "*.xlsx *.xls"), ("All files", "*.*")]
         )
+        if file_path:
+            try:
+                # Копируем файл в папку input
+                filename = os.path.basename(file_path)
+                input_path = os.path.join('LabelsMarksGenerator/input', filename)
+                shutil.copy2(file_path, input_path)
+                self.file_var.set(f"Выбран файл: {filename}")
+                self.status_var.set("Файл готов к обработке")
+                logger.info(f"Файл скопирован: {filename}")
 
-        if files:
-            for file_path in files:
-                try:
-                    shutil.copy2(file_path, 'input')
-                    logger.info(f"File copied: {os.path.basename(file_path)}")
-                except Exception as e:
-                    logger.error(f"File copy error {file_path}: {e}")
+                # Логируем событие выбора файла
+                log = Log(token=TOKEN, silent_errors=True)
+                log.info(f"Пользователь выбрал файл: {filename}")
 
-            self.status_var.set(f"Copied {len(files)} files to input")
+            except Exception as e:
+                logger.error(f"Ошибка копирования файла: {e}")
+                messagebox.showerror("Ошибка", f"Не удалось скопировать файл: {e}")
 
-    def process_files(self):
-        for dir_path in Config.OUTPUT_DIRS:
-            if os.path.exists(dir_path):
-                shutil.rmtree(dir_path, onerror=handle_remove_readonly)
-            os.makedirs(dir_path, exist_ok=True)
+                # Логируем ошибку
+                log = Log(token=TOKEN, silent_errors=True)
+                log.error(f"Ошибка копирования файла: {e}")
 
+    def process_file(self):
+        input_dir = 'LabelsMarksGenerator/input'
+        excel_files = [f for f in os.listdir(input_dir) if f.endswith(('.xlsx', '.xls'))]
+
+        if not excel_files:
+            messagebox.showwarning("Предупреждение", "В папке 'input' нет Excel файлов")
+
+            # Логируем предупреждение
+            log = Log(token=TOKEN, silent_errors=True)
+            log.warning("Попытка обработки при отсутствии файлов в папке input")
+            return
+
+        # Запускаем обработку в отдельном потоке
         thread = threading.Thread(target=self.process_files_thread)
         thread.daemon = True
         thread.start()
 
     def process_files_thread(self):
+        start_time = datetime.now()
+
         try:
             self.progress.start()
-            self.status_var.set("Processing files...")
+            self.status_var.set("Обработка файлов...")
 
-            label_generator = LabelGenerator()
-            mark_generator = MarkGenerator()
+            input_dir = 'LabelsMarksGenerator/input'
+            excel_files = [f for f in os.listdir(input_dir) if f.endswith(('.xlsx', '.xls'))]
 
-            input_dir = 'input'
-            excel_files = []
-            for file in os.listdir(input_dir):
-                if file.endswith(('.xlsx', '.xls')):
-                    excel_files.append(os.path.join(input_dir, file))
+            # Логируем начало обработки
+            log = Log(token=TOKEN, silent_errors=True)
+            log.info(f"Начало обработки {len(excel_files)} файлов")
 
-            if not excel_files:
-                logger.warning("No Excel files found in input folder")
-                self.status_var.set("No Excel files found in input folder")
-                return
+            total_files = len(excel_files)
+            processed_files = 0
 
-            for file_path in excel_files:
-                logger.info(f"Processing file: {file_path}")
-                df = read_excel(file_path)
+            for excel_file in excel_files:
+                excel_file_path = os.path.join(input_dir, excel_file)
+                logger.info(f"Обработка файла: {excel_file}")
 
-                if df is None or df.empty:
-                    logger.error(f"Failed to read data from {file_path}")
-                    continue
+                success = self.generator.process_excel_file(excel_file_path, "output")
 
-                for idx, row in df.iterrows():
-                    if not validate_data(row):
-                        logger.warning(f"Skipping row {idx} due to data errors")
-                        continue
+                if success:
+                    logger.info(f"Файл {excel_file} успешно обработан")
+                else:
+                    logger.error(f"Ошибка при обработке файла {excel_file}")
 
-                    article = str(row.get('артикул', '')).strip()
-                    code = str(row.get('код', '')).strip()
+                processed_files += 1
+                logger.info(f"Обработано файлов: {processed_files} из {total_files}")
 
-                    article_clean = re.sub(r'[\\/*?:"<>|]', "_", article)
-                    code_clean = re.sub(r'[\\/*?:"<>|]', "_", code)
+            logger.info("Обработка завершена!")
+            self.status_var.set("Обработка завершена успешно!")
+            messagebox.showinfo("Успех", "Обработка файлов завершена!\n\nРезультаты в папке 'output'")
 
-                    filename = f"label_{article_clean}_{code_clean}"
-                    mark_filename = f"mark_{article_clean}_{code_clean}"
-
-                    logger.info(f"Processing row {idx}: {row.get('наименование', '')}")
-
-                    label_png_path = f'output/labels_png/{filename}.png'
-                    label_pdf_path = f'output/labels_pdf/{filename}.pdf'
-                    label_generator.generate(row, label_png_path, label_pdf_path)
-
-                    mark_path = f'output/marks_png/{mark_filename}.png'
-                    mark_pdf_path = f'output/marks_pdf/{mark_filename}.pdf'
-                    mark_generator.generate(row, mark_path, mark_pdf_path)
-
-            logger.info("Generation completed!")
-            self.status_var.set("Processing completed successfully!")
-
-            messagebox.showinfo("Success", "File processing completed!\n\nResults are in the output folder.")
+            # Логируем успешное завершение в eff_runs
+            end_time = datetime.now()
+            log.finish_success(
+                period_from=start_time,
+                period_to=end_time,
+                files_processed=total_files,
+                duration_seconds=(end_time - start_time).total_seconds(),
+                message=f"Обработано {total_files} файлов, созданы этикетки и марки"
+            )
 
         except Exception as e:
-            logger.error(f"Processing error: {e}")
-            self.status_var.set(f"Error: {e}")
-            messagebox.showerror("Error", f"Processing error: {e}")
+            logger.error(f"Ошибка обработки: {e}")
+            self.status_var.set(f"Ошибка: {e}")
+            messagebox.showerror("Ошибка", f"Ошибка обработки: {e}")
+
+            # Логируем ошибку завершения
+            end_time = datetime.now()
+            log = Log(token=TOKEN, silent_errors=True)
+            log.finish_error(
+                period_from=start_time,
+                period_to=end_time,
+                error=str(e),
+                error_type=type(e).__name__,
+                files_processed=processed_files if 'processed_files' in locals() else 0
+            )
         finally:
             self.progress.stop()
 
     def run(self):
+        # Логируем запуск приложения
+        log = Log(token=TOKEN, silent_errors=True)
+        log.info("Приложение генератора этикеток и марок запущено")
+
         self.root.mainloop()
 
 
 def main():
+    # Логируем запуск программы
+    log = Log(token=TOKEN, silent_errors=True)
+    log.info("Программа генератора этикеток и марок запущена")
+
     if len(sys.argv) > 1 and sys.argv[1] == '--console':
-        console_main()
+        # Консольный режим
+        log.info("Запуск в консольном режиме")
+
+        generator = CombinedGenerator()
+        input_dir = "LabelsMarksGenerator/input"
+        output_dir = "LabelsMarksGenerator/output"
+
+        if not os.path.exists(input_dir):
+            log.error(f"Input directory '{input_dir}' not found")
+            print(f"Input directory '{input_dir}' not found")
+            return
+
+        excel_files = []
+        for file in os.listdir(input_dir):
+            if file.endswith(('.xlsx', '.xls')):
+                excel_files.append(os.path.join(input_dir, file))
+
+        if not excel_files:
+            log.warning("No Excel files found in input directory")
+            print("No Excel files found in input directory")
+            return
+
+        start_time = datetime.now()
+        total_files = len(excel_files)
+        log.info(f"Начало обработки {total_files} файлов в консольном режиме")
+
+        processed_files = 0
+        for excel_file in excel_files:
+            print(f"Processing: {excel_file}")
+            generator.process_excel_file(excel_file, output_dir)
+            processed_files += 1
+            print(f"Обработано файлов: {processed_files} из {total_files}")
+
+        end_time = datetime.now()
+        log.finish_success(
+            period_from=start_time,
+            period_to=end_time,
+            files_processed=total_files,
+            duration_seconds=(end_time - start_time).total_seconds(),
+            mode="console",
+            message=f"Обработано {total_files} файлов, созданы этикетки и марки"
+        )
     else:
+        # Графический режим
+        log.info("Запуск в графическом режиме")
         app = Application()
         app.run()
-
-
-def console_main():
-    os.makedirs('input', exist_ok=True)
-    for dir_path in Config.IMAGE_DIRS:
-        os.makedirs(dir_path, exist_ok=True)
-
-    for dir_path in Config.OUTPUT_DIRS:
-        if os.path.exists(dir_path):
-            shutil.rmtree(dir_path, onerror=handle_remove_readonly)
-        os.makedirs(dir_path, exist_ok=True)
-
-    label_generator = LabelGenerator()
-    mark_generator = MarkGenerator()
-
-    input_dir = 'input'
-    excel_files = []
-    for file in os.listdir(input_dir):
-        if file.endswith(('.xlsx', '.xls')):
-            excel_files.append(os.path.join(input_dir, file))
-
-    if not excel_files:
-        logger.warning("No Excel files found in input folder")
-        return
-
-    for file_path in excel_files:
-        logger.info(f"Processing file: {file_path}")
-        df = read_excel(file_path)
-
-        if df is None or df.empty:
-            logger.error(f"Failed to read data from {file_path}")
-            continue
-
-        for idx, row in df.iterrows():
-            if not validate_data(row):
-                logger.warning(f"Skipping row {idx} due to data errors")
-                continue
-
-            article = str(row.get('артикул', '')).strip()
-            code = str(row.get('код', '')).strip()
-
-            article_clean = re.sub(r'[\\/*?:"<>|]', "_", article)
-            code_clean = re.sub(r'[\\/*?:"<>|]', "_", code)
-
-            filename = f"label_{article_clean}_{code_clean}"
-            mark_filename = f"mark_{article_clean}_{code_clean}"
-
-            logger.info(f"Processing row {idx}: {row.get('наименование', '')}")
-
-            label_png_path = f'output/labels_png/{filename}.png'
-            label_pdf_path = f'output/labels_pdf/{filename}.pdf'
-            label_generator.generate(row, label_png_path, label_pdf_path)
-
-            mark_path = f'output/marks_png/{mark_filename}.png'
-            mark_pdf_path = f'output/marks_pdf/{mark_filename}.pdf'
-            mark_generator.generate(row, mark_path, mark_pdf_path)
-
-    logger.info("Generation completed!")
-    print("Processing completed. Results in output folder.")
 
 
 if __name__ == "__main__":

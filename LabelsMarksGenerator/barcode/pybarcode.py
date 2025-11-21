@@ -3,11 +3,11 @@ from __future__ import annotations
 import os
 from argparse import ArgumentParser
 
-from LabelsMarksGenerator import barcode
-from LabelsMarksGenerator.barcode.version import version
-from LabelsMarksGenerator.barcode.writer import BaseWriter
-from LabelsMarksGenerator.barcode.writer import ImageWriter
-from LabelsMarksGenerator.barcode.writer import SVGWriter
+import barcode
+from barcode.version import version
+from barcode.writer import BaseWriter
+from barcode.writer import ImageWriter
+from barcode.writer import SVGWriter
 
 IMG_FORMATS = ("BMP", "GIF", "JPEG", "MSP", "PCX", "PNG", "TIFF", "XBM")
 

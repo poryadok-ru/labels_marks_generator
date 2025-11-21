@@ -9,15 +9,15 @@ from typing import TYPE_CHECKING
 from typing import Collection
 from typing import Literal
 
-from LabelsMarksGenerator.barcode.base import Barcode
-from LabelsMarksGenerator.barcode.charsets import code39
-from LabelsMarksGenerator.barcode.charsets import code128
-from LabelsMarksGenerator.barcode.errors import BarcodeError
-from LabelsMarksGenerator.barcode.errors import IllegalCharacterError
-from LabelsMarksGenerator.barcode.errors import NumberOfDigitsError
+from barcode.base import Barcode
+from barcode.charsets import code39
+from barcode.charsets import code128
+from barcode.errors import BarcodeError
+from barcode.errors import IllegalCharacterError
+from barcode.errors import NumberOfDigitsError
 
 if TYPE_CHECKING:
-    from LabelsMarksGenerator.barcode.writer import BaseWriter
+    from barcode.writer import BaseWriter
 
 __docformat__ = "restructuredtext en"
 
