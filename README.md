@@ -1,45 +1,165 @@
-**Edit a file, create a new file, and clone from Bitbucket in under 2 minutes**
+# Bitrix24 Bot - Генератор Этикеток и Марок
 
-When you're done, you can delete the content in this README and update the file with details for others getting started with your repository.
+Бот для Bitrix24, который принимает архив с Excel + картинками и возвращает PDF этикетки и марки.
 
-*We recommend that you open this README in another tab as you perform the tasks below. You can [watch our video](https://youtu.be/0ocf7u76WSo) for a full demo of all the steps in this tutorial. Open the video in a new tab to avoid leaving Bitbucket.*
+## 🚀 Быстрый старт
 
----
+### 1. Установка зависимостей
 
-## Edit a file
+```bash
+pip install -r requirements.txt
+```
 
-You’ll start by editing this README file to learn how to edit a file in Bitbucket.
+### 2. Настройка
 
-1. Click **Source** on the left side.
-2. Click the README.md link from the list of files.
-3. Click the **Edit** button.
-4. Delete the following text: *Delete this line to make a change to the README from Bitbucket.*
-5. After making your change, click **Commit** and then **Commit** again in the dialog. The commit page will open and you’ll see the change you just made.
-6. Go back to the **Source** page.
+Создай файл `.env` (пример в `.env.example`):
 
----
+```env
+BITRIX_WEBHOOK=https://your-portal.bitrix24.ru/rest/USER_ID/CODE/
+HOST=0.0.0.0
+PORT=5000
+DEBUG=False
+LOG_LEVEL=INFO
+```
 
-## Create a file
+### 3. Запуск
 
-Next, you’ll add a new file to this repository.
+#### Вариант А: Локально (для разработки)
 
-1. Click the **New file** button at the top of the **Source** page.
-2. Give the file a filename of **contributors.txt**.
-3. Enter your name in the empty file space.
-4. Click **Commit** and then **Commit** again in the dialog.
-5. Go back to the **Source** page.
+```bash
+python bitrix_bot.py
+```
 
-Before you move on, go ahead and explore the repository. You've already seen the **Source** page, but check out the **Commits**, **Branches**, and **Settings** pages.
+#### Вариант Б: Docker
 
----
+```bash
+docker-compose up -d
+```
 
-## Clone a repository
+### 4. Публичный доступ (для Bitrix24)
 
-Use these steps to clone from SourceTree, our client for using the repository command-line free. Cloning allows you to work on your files locally. If you don't yet have SourceTree, [download and install first](https://www.sourcetreeapp.com/). If you prefer to clone from the command line, see [Clone a repository](https://confluence.atlassian.com/x/4whODQ).
+Для получения вебхуков используй ngrok:
 
-1. You’ll see the clone button under the **Source** heading. Click that button.
-2. Now click **Check out in SourceTree**. You may need to create a SourceTree account or log in.
-3. When you see the **Clone New** dialog in SourceTree, update the destination path and name if you’d like to and then click **Clone**.
-4. Open the directory you just created to see your repository’s files.
+```bash
+ngrok http 5000
+```
 
-Now that you're more familiar with your Bitbucket repository, go ahead and add a new file locally. You can [push your change back to Bitbucket with SourceTree](https://confluence.atlassian.com/x/iqyBMg), or you can [add, commit,](https://confluence.atlassian.com/x/8QhODQ) and [push from the command line](https://confluence.atlassian.com/x/NQ0zDQ).
+Укажи полученный URL в регистрации бота.
+
+## 📦 Формат входных данных
+
+Отправь в чат ZIP архив:
+
+```
+archive.zip
+├── data.xlsx           # Excel с данными
+└── img/                # Папка с картинками (опционально)
+    ├── logos/          # Логотипы компаний
+    ├── certificates/   # еас.png, рст.png
+    └── mark_images/    # mark_images.png
+```
+
+### Excel формат
+
+Колонки (на русском или английском):
+
+- **Наименование** (обязательно)
+- Артикул
+- Код
+- Штрихкод
+- Лого
+- Назначение
+- Материал
+- Производитель
+- Импортер
+- Страна происхождения
+- Дата изготовления
+- Сертификация
+- Тип сертификации
+
+## 📤 Результат
+
+Бот вернет архив `result.zip`:
+
+```
+result.zip
+├── labels/             # Этикетки
+│   ├── label_TSH-001_1234567.pdf
+│   └── ...
+└── marks/              # Марки
+    ├── mark_TSH-001_1234567.pdf
+    └── ...
+```
+
+## 🤖 Команды бота
+
+- `/start` - Начать работу
+- `/help` - Справка
+
+## 🛠 Разработка
+
+### Структура проекта
+
+```
+.
+├── bitrix_bot.py              # Основной файл бота
+├── main.py                    # Генератор этикеток
+├── LabelsMarksGenerator/
+│   ├── barcode/              # Библиотека для штрихкодов
+│   ├── img/                  # Изображения
+│   │   ├── logos/
+│   │   ├── certificates/
+│   │   └── mark_images/
+│   ├── input/                # Временные входные файлы
+│   └── output/               # Временные результаты
+├── Dockerfile
+├── docker-compose.yml
+├── requirements.txt
+└── .env
+```
+
+### API endpoints
+
+- `POST /webhook` - Прием вебхуков от Bitrix24
+- `GET /health` - Проверка работоспособности
+
+## 📝 Docker команды
+
+```bash
+# Сборка
+docker-compose build
+
+# Запуск
+docker-compose up -d
+
+# Логи
+docker-compose logs -f
+
+# Остановка
+docker-compose down
+```
+
+## ⚙️ Переменные окружения
+
+| Переменная | Описание | По умолчанию |
+|-----------|----------|--------------|
+| BITRIX_WEBHOOK | URL вебхука Bitrix24 | - |
+| HOST | Хост сервера | 0.0.0.0 |
+| PORT | Порт сервера | 5000 |
+| DEBUG | Режим отладки | False |
+| LOG_LEVEL | Уровень логирования | INFO |
+
+## 🐛 Troubleshooting
+
+### Бот не отвечает
+- Проверь доступность: `curl http://localhost:5000/health`
+- Проверь логи: `docker-compose logs -f`
+
+### Ошибка обработки
+- Проверь структуру архива
+- Убедись что есть Excel файл
+- Проверь формат Excel (.xlsx или .xls)
+
+## 📄 Лицензия
+
+Для внутреннего использования.

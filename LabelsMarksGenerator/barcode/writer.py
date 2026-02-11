@@ -8,7 +8,7 @@ from typing import BinaryIO
 from typing import Callable
 from typing import TypedDict
 
-from barcode.version import version
+from LabelsMarksGenerator.barcode.version import version
 
 if TYPE_CHECKING:
     from typing import Generator

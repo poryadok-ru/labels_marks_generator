@@ -8,7 +8,7 @@ is new calculated.
 
 Example::
 
-    >>> from barcode import get_barcode
+    >>> from LabelsMarksGenerator.barcode import get_barcode
     >>> ISBN = get_barcode('isbn10')
     >>> isbn = ISBN('0132354187')
     >>> isbn
@@ -23,9 +23,9 @@ Example::
 """
 from __future__ import annotations
 
-from barcode.ean import EuropeanArticleNumber13
-from barcode.errors import BarcodeError
-from barcode.errors import WrongCountryCodeError
+from LabelsMarksGenerator.barcode.ean import EuropeanArticleNumber13
+from LabelsMarksGenerator.barcode.errors import BarcodeError
+from LabelsMarksGenerator.barcode.errors import WrongCountryCodeError
 
 __docformat__ = "restructuredtext en"
 

@@ -6,9 +6,9 @@ from __future__ import annotations
 
 __docformat__ = "restructuredtext en"
 
-from barcode.base import Barcode
-from barcode.charsets import itf
-from barcode.errors import IllegalCharacterError
+from LabelsMarksGenerator.barcode.base import Barcode
+from LabelsMarksGenerator.barcode.charsets import itf
+from LabelsMarksGenerator.barcode.errors import IllegalCharacterError
 
 MIN_SIZE = 0.2
 MIN_QUIET_ZONE = 6.4

@@ -10,28 +10,28 @@ from typing import TYPE_CHECKING
 from typing import BinaryIO
 from typing import overload
 
-from barcode.codabar import CODABAR
-from barcode.codex import PZN
-from barcode.codex import Code39
-from barcode.codex import Code128
-from barcode.codex import Gs1_128
-from barcode.ean import EAN8
-from barcode.ean import EAN8_GUARD
-from barcode.ean import EAN13
-from barcode.ean import EAN13_GUARD
-from barcode.ean import EAN14
-from barcode.ean import JAN
-from barcode.errors import BarcodeNotFoundError
-from barcode.isxn import ISBN10
-from barcode.isxn import ISBN13
-from barcode.isxn import ISSN
-from barcode.itf import ITF
-from barcode.upc import UPCA
-from barcode.version import version  # noqa: F401
+from LabelsMarksGenerator.barcode.codabar import CODABAR
+from LabelsMarksGenerator.barcode.codex import PZN
+from LabelsMarksGenerator.barcode.codex import Code39
+from LabelsMarksGenerator.barcode.codex import Code128
+from LabelsMarksGenerator.barcode.codex import Gs1_128
+from LabelsMarksGenerator.barcode.ean import EAN8
+from LabelsMarksGenerator.barcode.ean import EAN8_GUARD
+from LabelsMarksGenerator.barcode.ean import EAN13
+from LabelsMarksGenerator.barcode.ean import EAN13_GUARD
+from LabelsMarksGenerator.barcode.ean import EAN14
+from LabelsMarksGenerator.barcode.ean import JAN
+from LabelsMarksGenerator.barcode.errors import BarcodeNotFoundError
+from LabelsMarksGenerator.barcode.isxn import ISBN10
+from LabelsMarksGenerator.barcode.isxn import ISBN13
+from LabelsMarksGenerator.barcode.isxn import ISSN
+from LabelsMarksGenerator.barcode.itf import ITF
+from LabelsMarksGenerator.barcode.upc import UPCA
+from LabelsMarksGenerator.barcode.version import version  # noqa: F401
 
 if TYPE_CHECKING:
-    from barcode.base import Barcode
-    from barcode.writer import BaseWriter
+    from LabelsMarksGenerator.barcode.base import Barcode
+    from LabelsMarksGenerator.barcode.writer import BaseWriter
 
 __BARCODE_MAP: dict[str, type[Barcode]] = {
     "codabar": CODABAR,
@@ -130,7 +130,7 @@ def generate(
     :param writer_options: Options to pass on to the writer instance.
     :param text: Text to render under the barcode.
     """
-    from barcode.base import Barcode
+    from LabelsMarksGenerator.barcode.base import Barcode
 
     if output is None:
         raise TypeError("'output' cannot be None")

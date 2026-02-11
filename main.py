@@ -4,6 +4,9 @@ from reportlab.lib.pagesizes import mm
 from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.ttfonts import TTFont
 from reportlab.lib.utils import ImageReader
+from reportlab.graphics.barcode import eanbc
+from reportlab.graphics.shapes import Drawing
+from reportlab.graphics import renderPDF
 from PIL import Image
 import os
 import re
@@ -11,8 +14,6 @@ from typing import Dict, Optional
 from LabelsMarksGenerator.barcode.writer import ImageWriter
 from io import BytesIO
 import logging
-import tkinter as tk
-from tkinter import filedialog, messagebox, ttk
 import threading
 import shutil
 import sys
@@ -20,15 +21,12 @@ from datetime import datetime
 from barcode.writer import ImageWriter
 import barcode
 
-# Импортируем библиотеку для логирования
 try:
     from log import Log
 except ImportError:
     print(
         "Библиотека логирования не установлена. Установите через: pip install git+ssh://git@github.com/AlexMayka/logging_python.git")
 
-
-    # Создаем заглушку для случая, если библиотека не установлена
     class Log:
         def __init__(self, token=None, **kwargs):
             self.token = token
@@ -69,6 +67,19 @@ except ImportError:
         def finish_error(self, period_from, period_to, **kwargs):
             print(f"ERROR: Завершено с ошибкой с {period_from} по {period_to}")
             return type('Response', (), {'status_code': 201})()
+
+
+# Пытаемся импортировать tkinter для GUI, но не падаем, если его нет (например, на macOS без Tk)
+try:
+    import tkinter as tk
+    from tkinter import filedialog, messagebox, ttk
+    TK_AVAILABLE = True
+except Exception:
+    tk = None
+    filedialog = None
+    messagebox = None
+    ttk = None
+    TK_AVAILABLE = False
 
 # Токен для логирования - замените на ваш действительный токен
 TOKEN = "10619b22-ca9f-404c-bf91-977530ac0e1a"
@@ -301,23 +312,58 @@ class PDFLabelGenerator:
         self.logo_height = 5.76 * mm
         self.cert_sign_size = 4 * mm
         self.logger = Log(token=TOKEN, silent_errors=True)
+        self._register_fonts()
 
-        # Register Arial font
+    def _register_fonts(self):
+        """Регистрирует шрифты Arial с fallback на стандартные шрифты."""
         try:
-            if os.path.exists('arial.ttf'):
-                pdfmetrics.registerFont(TTFont('Arial', 'arial.ttf'))
-                pdfmetrics.registerFont(TTFont('Arial-Bold', 'arialbd.ttf'))
-            else:
-                font_path = os.path.join(os.environ['WINDIR'], 'Fonts', 'arial.ttf')
-                bold_font_path = os.path.join(os.environ['WINDIR'], 'Fonts', 'arialbd.ttf')
+            # Пробуем найти Arial на разных платформах
+            font_paths = [
+                'arial.ttf',
+                'arialbd.ttf',
+                os.path.join(os.environ.get('WINDIR', ''), 'Fonts', 'arial.ttf'),
+                os.path.join(os.environ.get('WINDIR', ''), 'Fonts', 'arialbd.ttf'),
+                '/System/Library/Fonts/Supplemental/Arial.ttf',
+                '/System/Library/Fonts/Supplemental/Arial Bold.ttf',
+                '/Library/Fonts/Arial.ttf',
+                '/Library/Fonts/Arial Bold.ttf',
+            ]
+
+            arial_registered = False
+            arial_bold_registered = False
+
+            for font_path in font_paths:
                 if os.path.exists(font_path):
-                    pdfmetrics.registerFont(TTFont('Arial', font_path))
-                if os.path.exists(bold_font_path):
-                    pdfmetrics.registerFont(TTFont('Arial-Bold', bold_font_path))
-                else:
-                    pdfmetrics.registerFont(TTFont('Arial-Bold', font_path))
+                    try:
+                        if 'bd' in font_path.lower() or 'bold' in font_path.lower():
+                            if not arial_bold_registered:
+                                pdfmetrics.registerFont(TTFont('Arial-Bold', font_path))
+                                arial_bold_registered = True
+                        else:
+                            if not arial_registered:
+                                pdfmetrics.registerFont(TTFont('Arial', font_path))
+                                arial_registered = True
+                    except Exception as e:
+                        logger.debug(f"Не удалось зарегистрировать шрифт {font_path}: {e}")
+                        continue
+
+            # Если не удалось зарегистрировать, используем стандартные шрифты
+            if not arial_registered or not arial_bold_registered:
+                logger.info("Arial не найден, будут использованы стандартные шрифты Helvetica")
+        except Exception as e:
+            logger.debug(f"Ошибка при регистрации шрифтов: {e}")
+
+    def _get_fonts(self):
+        """Возвращает имена шрифтов с fallback на стандартные."""
+        try:
+            # Проверяем, зарегистрированы ли шрифты
+            if pdfmetrics.getFont('Arial-Bold') and pdfmetrics.getFont('Arial'):
+                return 'Arial-Bold', 'Arial-Bold', 'Arial', 'Arial'
         except:
             pass
+        
+        # Fallback на стандартные шрифты
+        return 'Helvetica-Bold', 'Helvetica-Bold', 'Helvetica', 'Helvetica'
 
     def normalize_column_name(self, col_name: str) -> str:
         if pd.isna(col_name):
@@ -397,32 +443,65 @@ class PDFLabelGenerator:
 
         return lines
 
-    def generate_barcode(self, barcode_value: str) -> Optional[ImageReader]:
+    def draw_ean13_barcode(
+        self,
+        canvas_obj: canvas.Canvas,
+        barcode_value: str,
+        x: float,
+        y: float,
+        width: float,
+        height: float,
+    ) -> bool:
+        """
+        Рисует векторный штрихкод EAN-13 непосредственно на canvas.
+        Штрихкод и цифры под ним полностью векторные - масштабируются вместе с PDF
+        и адаптируются к изменению размера страницы.
+        """
         try:
             if not barcode_value:
-                return None
-            barcode_str = str(barcode_value).strip()
-            if barcode_str.endswith('.0'):
-                barcode_str = barcode_str[:-2]
-            barcode_str = ''.join(filter(str.isdigit, barcode_str))
-            if not barcode_str:
-                return None
-            # Использование библиотеки python-barcode
-            code128 = barcode.get('code128', barcode_str, writer=ImageWriter())
-            buffer = BytesIO()
-            code128.write(buffer)
-            buffer.seek(0)
-            barcode_img = Image.open(buffer)
-            barcode_img.load()
-            if barcode_img.mode != 'RGB':
-                barcode_img = barcode_img.convert('RGB')
-            barcode_img = barcode_img.resize((200, 200))
-            buffer2 = BytesIO()
-            barcode_img.save(buffer2, format='PNG')
-            buffer2.seek(0)
-            return ImageReader(buffer2)
+                return False
+
+            digits = re.sub(r'\D', '', str(barcode_value).strip())
+
+            if len(digits) == 13:
+                digits = digits[:12]
+            if len(digits) != 12:
+                logger.warning(f"Штрихкод должен содержать 12 или 13 цифр, получено {len(digits)}: {digits} из {barcode_value}")
+                return False
+
+            # Создаем виджет штрихкода с включенными цифрами (векторный текст)
+            barcode_widget = eanbc.Ean13BarcodeWidget(digits)
+            barcode_widget.humanReadable = True  # Цифры под штрихкодом как векторный текст
+
+            # Получаем естественные размеры виджета (включая цифры)
+            bounds = barcode_widget.getBounds()
+            bw = bounds[2] - bounds[0]
+            bh = bounds[3] - bounds[1]
+            if bw <= 0 or bh <= 0:
+                return False
+
+            # Вычисляем коэффициент масштабирования для сохранения пропорций
+            # Это гарантирует, что и штрихкод, и цифры масштабируются одинаково
+            scale_x = width / bw
+            scale_y = height / bh
+            scale = min(scale_x, scale_y)  # Сохраняем пропорции
+            
+            # Создаем векторный drawing с исходными размерами
+            # Все элементы (штрихкод + цифры) будут масштабироваться вместе
+            drawing = Drawing(bw, bh)
+            drawing.add(barcode_widget)
+
+            # Масштабируем весь drawing (штрихкод + цифры) пропорционально
+            # При изменении размера PDF все будет масштабироваться вместе
+            drawing.scale(scale, scale)
+
+            # Рисуем на canvas - координаты в мм, поэтому масштабируются вместе с PDF
+            # Цифры остаются векторным текстом и масштабируются вместе со штрихкодом
+            renderPDF.draw(drawing, canvas_obj, x, y)
+            return True
         except Exception as e:
-            return None
+            logger.error(f"Ошибка при рисовании векторного штрихкода: {e}")
+            return False
 
     def get_logo_image(self, logo_name: str) -> Optional[ImageReader]:
         if not logo_name:
@@ -479,10 +558,8 @@ class PDFLabelGenerator:
         try:
             c = canvas.Canvas(output_path, pagesize=(self.page_width, self.page_height))
 
-            font_large_bold = 'Arial-Bold'
-            font_medium_bold = 'Arial-Bold'
-            font_medium = 'Arial'
-            font_small = 'Arial'
+            # Регистрируем шрифты с fallback на стандартные
+            font_large_bold, font_medium_bold, font_medium, font_small = self._get_fonts()
 
             large_font_size = 5
             medium_font_size = 4
@@ -653,16 +730,36 @@ class PDFLabelGenerator:
                         c.drawString(cert_area_x, cert_y, line)
 
             if barcode_value:
-                barcode_img = self.generate_barcode(barcode_value)
-                if barcode_img:
-                    barcode_x = self.page_width - 20 * mm
-                    barcode_y = 1 * mm
-                    c.drawImage(barcode_img, barcode_x, barcode_y, 20 * mm, 8 * mm)
+                # Адаптивный размер штрихкода - занимает 50% ширины страницы
+                # Минимальная ширина 15mm, максимальная 25mm для читаемости
+                barcode_width = max(15 * mm, min(25 * mm, self.page_width * 0.5))
+                # Высота пропорциональна ширине (соотношение 2.5:1 для EAN-13)
+                barcode_height = barcode_width / 2.5
+                
+                # Позиция справа с небольшим отступом
+                barcode_x = self.page_width - barcode_width - 1 * mm
+                barcode_y = 1 * mm
+                
+                try:
+                    self.draw_ean13_barcode(
+                        c,
+                        barcode_value,
+                        barcode_x,
+                        barcode_y,
+                        barcode_width,
+                        barcode_height,
+                    )
+                except Exception as e:
+                    # Логируем ошибку, но продолжаем создание PDF
+                    logger.warning(f"Ошибка при рисовании штрихкода: {e}")
 
             c.save()
             return True
 
         except Exception as e:
+            logger.error(f"Ошибка при создании этикетки {output_path}: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
             return False
 
 
@@ -784,24 +881,19 @@ class Application:
         instruction_label = ttk.Label(main_frame, text=instruction_text, justify=tk.LEFT)
         instruction_label.grid(row=1, column=0, columnspan=2, pady=(0, 20))
 
-        # Кнопка выбора файла
         select_btn = ttk.Button(main_frame, text="Выбрать файл", command=self.select_file)
         select_btn.grid(row=2, column=0, pady=5, padx=5, sticky=tk.EW)
 
-        # Кнопка обработки
         process_btn = ttk.Button(main_frame, text="Обработать файл", command=self.process_file)
         process_btn.grid(row=2, column=1, pady=5, padx=5, sticky=tk.EW)
 
-        # Прогресс-бар
         self.progress = ttk.Progressbar(main_frame, mode='indeterminate')
         self.progress.grid(row=3, column=0, columnspan=2, pady=10, sticky=tk.EW)
 
-        # Статус
         self.status_var = tk.StringVar(value="Готов к работе")
         status_label = ttk.Label(main_frame, textvariable=self.status_var)
         status_label.grid(row=4, column=0, columnspan=2, pady=5)
 
-        # Лог
         log_frame = ttk.LabelFrame(main_frame, text="Лог выполнения", padding="5")
         log_frame.grid(row=5, column=0, columnspan=2, pady=10, sticky=(tk.W, tk.E, tk.N, tk.S))
 
@@ -811,12 +903,10 @@ class Application:
         self.log_text.grid(row=0, column=0, sticky=(tk.W, tk.E, tk.N, tk.S))
         log_scrollbar.grid(row=0, column=1, sticky=(tk.N, tk.S))
 
-        # Информация о выбранном файле
         self.file_var = tk.StringVar(value="Файл не выбран")
         file_label = ttk.Label(main_frame, textvariable=self.file_var)
         file_label.grid(row=6, column=0, columnspan=2, pady=5)
 
-        # Настройка весов для растягивания
         self.root.columnconfigure(0, weight=1)
         self.root.rowconfigure(0, weight=1)
         main_frame.columnconfigure(0, weight=1)
@@ -825,7 +915,6 @@ class Application:
         log_frame.columnconfigure(0, weight=1)
         log_frame.rowconfigure(0, weight=1)
 
-        # Перенаправление вывода в лог
         self.redirect_logging()
 
     def redirect_logging(self):
@@ -965,8 +1054,8 @@ def main():
     log = Log(token=TOKEN, silent_errors=True)
     log.info("Программа генератора этикеток и марок запущена")
 
-    if len(sys.argv) > 1 and sys.argv[1] == '--console':
-        # Консольный режим
+    def run_console_mode():
+        """Запуск обработки в консольном режиме (без GUI)."""
         log.info("Запуск в консольном режиме")
 
         generator = CombinedGenerator()
@@ -1008,8 +1097,18 @@ def main():
             mode="console",
             message=f"Обработано {total_files} файлов, созданы этикетки и марки"
         )
+
+    # Если явно указан консольный режим
+    if len(sys.argv) > 1 and sys.argv[1] == '--console':
+        run_console_mode()
     else:
-        # Графический режим
+        # Пытаемся запустить графический режим, если доступен tkinter
+        if not TK_AVAILABLE:
+            log.warning("Tkinter недоступен, запускаю в консольном режиме")
+            print("Внимание: Tkinter недоступен, запуск в консольном режиме.")
+            run_console_mode()
+            return
+
         log.info("Запуск в графическом режиме")
         app = Application()
         app.run()

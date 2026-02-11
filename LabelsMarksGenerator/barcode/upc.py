@@ -8,10 +8,10 @@ __docformat__ = "restructuredtext en"
 
 from functools import reduce
 
-from barcode.base import Barcode
-from barcode.charsets import upc as _upc
-from barcode.errors import IllegalCharacterError
-from barcode.errors import NumberOfDigitsError
+from LabelsMarksGenerator.barcode.base import Barcode
+from LabelsMarksGenerator.barcode.charsets import upc as _upc
+from LabelsMarksGenerator.barcode.errors import IllegalCharacterError
+from LabelsMarksGenerator.barcode.errors import NumberOfDigitsError
 
 
 class UniversalProductCodeA(Barcode):

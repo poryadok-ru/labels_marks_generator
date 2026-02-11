@@ -1,19 +1,50 @@
 # Python
 __pycache__/
 *.py[cod]
+*$py.class
+*.so
+.Python
 
-# Env
+# Virtual Environment
 venv/
-.env/
+venv_mac/
+ENV/
+env/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+app.log
+
+# Environment
+.env
 
 # Build
 build/
 dist/
 *.spec
-*.zip
 
-# Output, logs, tests
-output/
-*.log
-*.pdf
+# Output
+LabelsMarksGenerator/output/*
+!LabelsMarksGenerator/output/.gitkeep
+
+# Input
+LabelsMarksGenerator/input/*
+!LabelsMarksGenerator/input/.gitkeep
+
+# Test files
+test_*.pdf
 test*.py
+
+# Archives (except example)
+*.zip
+!example_archive.zip

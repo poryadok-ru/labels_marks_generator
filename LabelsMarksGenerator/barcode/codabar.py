@@ -6,10 +6,10 @@ from __future__ import annotations
 
 __docformat__ = "restructuredtext en"
 
-from barcode.base import Barcode
-from barcode.charsets import codabar
-from barcode.errors import BarcodeError
-from barcode.errors import IllegalCharacterError
+from LabelsMarksGenerator.barcode.base import Barcode
+from LabelsMarksGenerator.barcode.charsets import codabar
+from LabelsMarksGenerator.barcode.errors import BarcodeError
+from LabelsMarksGenerator.barcode.errors import IllegalCharacterError
 
 
 class CODABAR(Barcode):
@@ -44,7 +44,7 @@ class CODABAR(Barcode):
     def build(self) -> list[str]:
         try:
             data = (
-                codabar.STARTSTOP[self.code[0]] + "n"
+                    codabar.STARTSTOP[self.code[0]] + "n"
             )  # Start with [A-D], followed by a narrow space
 
         except KeyError:

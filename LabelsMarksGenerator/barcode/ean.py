@@ -8,11 +8,11 @@ from __future__ import annotations
 __docformat__ = "restructuredtext en"
 
 
-from barcode.base import Barcode
-from barcode.charsets import ean as _ean
-from barcode.errors import IllegalCharacterError
-from barcode.errors import NumberOfDigitsError
-from barcode.errors import WrongCountryCodeError
+from LabelsMarksGenerator.barcode.base import Barcode
+from LabelsMarksGenerator.barcode.charsets import ean as _ean
+from LabelsMarksGenerator.barcode.errors import IllegalCharacterError
+from LabelsMarksGenerator.barcode.errors import NumberOfDigitsError
+from LabelsMarksGenerator.barcode.errors import WrongCountryCodeError
 
 # EAN13 Specs (all sizes in mm)
 SIZES = {
